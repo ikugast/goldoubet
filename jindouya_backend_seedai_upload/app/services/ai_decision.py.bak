@@ -1,0 +1,189 @@
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, Dict, Optional
+
+import requests
+
+from app.config import get_settings
+from app.models import DecisionRequest, DecisionResponse
+from app.services.prompts import STRATEGY_PROMPTS
+
+
+def _extract_json(text: str) -> Dict[str, Any]:
+    text = text.strip()
+    if not text:
+        raise ValueError("模型返回为空")
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        raise ValueError("未找到JSON对象")
+    return json.loads(match.group(0))
+
+
+def _normalize_action(action: str) -> str:
+    a = (action or "").strip().lower()
+    mapping = {
+        "buy": "买入",
+        "sell": "卖出",
+        "hold": "持有",
+        "increase": "加仓",
+        "reduce": "减仓",
+        "加仓": "加仓",
+        "减仓": "减仓",
+        "买入": "买入",
+        "卖出": "卖出",
+        "持有": "持有",
+    }
+    return mapping.get(a, "持有")
+
+
+def _fallback_rule(payload: DecisionRequest) -> DecisionResponse:
+    strategy = payload.strategy
+    price = float(payload.market_data.get("price", 0) or 0)
+    change_pct = float(payload.market_data.get("change_pct", 0) or 0)
+    has_position = bool(payload.position.get("has_position", False))
+
+    if strategy == "stock_steady":
+        action = "持有"
+        if change_pct <= -2 and not has_position:
+            action = "买入"
+        elif change_pct >= 4 and has_position:
+            action = "减仓"
+        reason = "以控制回撤为核心，优先等待更有性价比的位置。"
+        risk_note = "避免追涨，单一标的仓位不宜过重。"
+        confidence = 0.72
+    elif strategy == "stock_scalper":
+        action = "持有"
+        if change_pct > 1.2:
+            action = "买入"
+        elif change_pct < -1.5 and has_position:
+            action = "卖出"
+        reason = "以日内强弱和节奏为先，快速反应、快进快出。"
+        risk_note = "短线波动大，需严格执行止损。"
+        confidence = 0.81
+    elif strategy == "crypto_flexible":
+        action = "持有"
+        if change_pct > 2:
+            action = "加仓"
+        elif change_pct < -3 and has_position:
+            action = "减仓"
+        reason = "在趋势与波动之间灵活切换，保留机动仓位。"
+        risk_note = "加密资产24小时交易，需关注夜间风险。"
+        confidence = 0.78
+    else:
+        action = "持有"
+        if change_pct > 3:
+            action = "加仓"
+        elif change_pct < -4 and has_position:
+            action = "减仓"
+        reason = "收益优先，接受更高波动与更大回撤。"
+        risk_note = "高风险风格，仅适合高波动承受能力。"
+        confidence = 0.83
+
+    qty = float(payload.position.get("qty", 0) or 0)
+    if action in ("买入", "加仓"):
+        qty = max(qty * 0.1, 1)
+    elif action in ("卖出", "减仓"):
+        qty = max(qty * 0.15, 1)
+    else:
+        qty = 0.0
+
+    return DecisionResponse(
+        strategy=strategy,
+        action=action,
+        confidence=confidence,
+        reason=reason,
+        risk_note=risk_note,
+        symbol=payload.symbol,
+        qty=round(float(qty), 4),
+        mode="rule",
+        raw_output=None,
+    )
+
+
+def _build_user_payload(payload: DecisionRequest) -> Dict[str, Any]:
+    return {
+        "strategy": payload.strategy,
+        "symbol": payload.symbol,
+        "market_data": payload.market_data,
+        "position": payload.position,
+        "account": payload.account,
+        "constraints": payload.constraints,
+    }
+
+
+def call_real_ai(payload: DecisionRequest) -> DecisionResponse:
+    settings = get_settings()
+    if not settings.ark_api_key or not settings.ark_model:
+        raise ValueError("缺少ARK_API_KEY或ARK_MODEL")
+
+    system_prompt = STRATEGY_PROMPTS.get(payload.strategy)
+    if not system_prompt:
+        raise ValueError("未知策略")
+
+    body = {
+        "model": settings.ark_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(_build_user_payload(payload), ensure_ascii=False)},
+        ],
+        "temperature": 0.2,
+    }
+    if settings.ark_use_json_object:
+        body["response_format"] = {"type": "json_object"}
+
+    base_url = settings.ark_base_url.rstrip("/")
+    url = base_url + "/chat/completions"
+    resp = requests.post(
+        url,
+        headers={
+            "Authorization": "Bearer " + settings.ark_api_key,
+            "Content-Type": "application/json",
+        },
+        json=body,
+        timeout=settings.ark_timeout_seconds,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    content = data["choices"][0]["message"]["content"]
+    parsed = _extract_json(content)
+
+    action = _normalize_action(str(parsed.get("action", "hold")))
+    qty = float(parsed.get("qty", 0) or 0)
+    confidence = float(parsed.get("confidence", 0.5) or 0.5)
+    confidence = min(max(confidence, 0.0), 1.0)
+    reason = str(parsed.get("reason", "模型未给出原因"))
+    risk_note = str(parsed.get("risk_note", "请注意控制风险。"))
+    symbol = str(parsed.get("symbol", payload.symbol or "")) or payload.symbol
+
+    return DecisionResponse(
+        strategy=payload.strategy,
+        action=action,
+        confidence=confidence,
+        reason=reason,
+        risk_note=risk_note,
+        symbol=symbol,
+        qty=round(qty, 4),
+        mode="real_ai",
+        raw_output=parsed,
+    )
+
+
+def generate_decision(payload: DecisionRequest) -> DecisionResponse:
+    settings = get_settings()
+    if not settings.use_real_ai:
+        return _fallback_rule(payload)
+
+    try:
+        return call_real_ai(payload)
+    except Exception as exc:
+        fallback = _fallback_rule(payload)
+        fallback.risk_note = fallback.risk_note + "（真实AI调用失败，已回退规则引擎）"
+        fallback.raw_output = {"error": str(exc)}
+        return fallback
