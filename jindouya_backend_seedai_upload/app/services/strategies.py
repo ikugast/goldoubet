@@ -2,130 +2,235 @@ from __future__ import annotations
 
 from copy import deepcopy
 from typing import Dict, List, Tuple
+from datetime import datetime
 
 from app.models import Position, StrategySnapshot, TradeRecord
-from app.services.market_data import Quote, fetch_a_share_quotes, fetch_crypto_quotes, get_now_ts
+from app.services.market_data import Quote, fetch_a_share_quotes, get_now_ts
 
+
+# 98只核心算力资产池 + 全市场热点标的
+CORE_ASSETS = [
+    # AI芯片/半导体
+    ("688981", "中芯国际"), ("688256", "寒武纪"), ("688012", "中微公司"),
+    ("002371", "北方华创"), ("688347", "华虹公司"), ("688608", "恒玄科技"),
+    ("688521", "芯原股份"), ("688019", "安集科技"), ("688582", "芯动联科"),
+    ("688325", "赛微微电"), ("688143", "长盈通"), ("600460", "士兰微"),
+    ("002049", "紫光国微"), ("300672", "国科微"), ("300661", "圣邦股份"),
+    ("688008", "澜起科技"), ("688048", "长光华芯"), ("688702", "盛科通信-U"),
+    ("002156", "通富微电"), ("688183", "生益电子"), ("600183", "生益科技"),
+    ("688411", "海博思创"), ("001389", "广合科技"), ("688662", "富信科技"),
+    ("688525", "长芯博创"), ("688596", "正帆科技"), ("688401", "路维光电"),
+    ("688629", "华丰科技"), ("688065", "凯赛生物"), ("603986", "兆易创新"),
+    ("688148", "先导基电"), ("835179", "凯德石英"),
+    
+    # 光模块/CPO
+    ("300308", "中际旭创"), ("300502", "新易盛"), ("300394", "天孚通信"),
+    ("002281", "光迅科技"), ("300570", "太辰光"), ("601869", "长飞光纤"),
+    ("688313", "仕佳光子"), ("688498", "源杰科技"), ("300757", "罗博特科"),
+    ("300913", "兆龙互连"), ("603083", "剑桥科技"),
+    
+    # 服务器/PCB/算力硬件
+    ("601138", "工业富联"), ("603019", "中科曙光"), ("000066", "中国长城"),
+    ("002916", "深南电路"), ("002463", "沪电股份"), ("300476", "胜宏科技"),
+    ("603228", "景旺电子"), ("300953", "震裕科技"), ("301607", "富特科技"),
+    ("301392", "百川电子"), ("300625", "联合动力"), ("300870", "欧陆通"),
+    
+    # 算力应用/软件
+    ("300418", "昆仑万维"), ("002261", "拓维信息"), ("600602", "云赛智联"),
+    ("000158", "常山北明"), ("301165", "锐捷网络"), ("688072", "拓荆科技"),
+    ("603236", "移远通信"), ("300236", "上海新阳"), ("300866", "安克创新"),
+    ("002920", "德赛西威"), ("300587", "千里科技"), ("002179", "中航光电"),
+    
+    # 能源配套/储能/电力
+    ("300750", "宁德时代"), ("300274", "阳光电源"), ("601012", "隆基绿能"),
+    ("002837", "英维克"), ("300617", "明阳电气"), ("300499", "高澜股份"),
+    ("300153", "科泰电源"), ("300068", "南都电源"), ("688800", "瑞可达"),
+    ("002364", "中恒电气"), ("002922", "伊戈尔"), ("688676", "金盘科技"),
+    ("002851", "麦格米特"), ("300990", "同飞股份"), ("603119", "浙江荣泰"),
+    ("301155", "海力风电"), ("300748", "金力永磁"), ("002056", "横店东磁"),
+    ("001267", "汇绿生态"), ("000338", "潍柴重机"),
+    
+    # 电力/核电
+    ("601985", "中国核电"), ("600011", "华能国际"), ("600875", "东方电气"),
+    ("002128", "电投能源"), ("002360", "华能蒙电"), ("300031", "中熔电气"),
+]
+
+# 决策时间点配置
+DECISION_POINTS = ["09:30", "13:00", "14:50"]
 
 STRATEGY_CONFIG: Dict[str, Dict] = {
-    "stock_steady": {
-        "display_name": "成熟稳健",
+    "momentum_trend": {
+        "display_name": "趋势动量跟踪",
         "market_type": "stock",
-        "run_frequency": "09:30 / 14:50",
-        "initial_capital": 1_000_000,
-        "cash": 402_500,
-        "symbols": ["600519", "300750", "601318"],
+        "strategy_type": "momentum_trend_following",
+        "run_frequency": "09:30 / 13:00 / 14:50",
+        "decision_points": DECISION_POINTS,
+        "initial_capital": 2_000_000,
+        "cash": 800_000,
+        "max_leverage": 1.0,  # 1x杠杆，总购买力 = 净资产 × 2
+        "symbols": [code for code, _ in CORE_ASSETS],
+        "asset_pool": {code: {"name": name, "is_hot": False} for code, name in CORE_ASSETS},
         "positions": [
             {
-                "symbol": "600519",
-                "name": "贵州茅台",
-                "weight": 0.24,
-                "qty": 120,
-                "cost_price": 1620.0,
-                "thesis": "白酒龙头，现金流稳健，适合中期持有。",
+                "symbol": "300308",
+                "name": "中际旭创",
+                "weight": 0.12,
+                "qty": 800,
+                "cost_price": 155.0,
+                "thesis": "光模块龙头，AI算力核心标的，趋势强劲。",
+                "t1_sellable": 800,  # T+1可卖数量
+                "buy_date": "2026-03-20",
+            },
+            {
+                "symbol": "688981",
+                "name": "中芯国际",
+                "weight": 0.10,
+                "qty": 2000,
+                "cost_price": 85.0,
+                "thesis": "国产芯片代工龙头，算力基础设施核心。",
+                "t1_sellable": 2000,
+                "buy_date": "2026-03-19",
+            },
+            {
+                "symbol": "300502",
+                "name": "新易盛",
+                "weight": 0.08,
+                "qty": 600,
+                "cost_price": 128.0,
+                "thesis": "高速光模块供应商，受益于AI算力需求爆发。",
+                "t1_sellable": 400,  # 部分T+1锁定
+                "buy_date": "2026-03-21",
+            },
+            {
+                "symbol": "688256",
+                "name": "寒武纪",
+                "weight": 0.06,
+                "qty": 400,
+                "cost_price": 245.0,
+                "thesis": "AI芯片设计龙头，国产算力核心标的。",
+                "t1_sellable": 400,
+                "buy_date": "2026-03-18",
             },
             {
                 "symbol": "300750",
                 "name": "宁德时代",
-                "weight": 0.20,
-                "qty": 700,
-                "cost_price": 182.0,
-                "thesis": "新能源龙头，产业链地位强，波动中寻找配置机会。",
-            },
-            {
-                "symbol": "601318",
-                "name": "中国平安",
-                "weight": 0.14,
-                "qty": 2500,
-                "cost_price": 42.6,
-                "thesis": "低估值金融蓝筹，分红与估值修复双逻辑。",
+                "weight": 0.05,
+                "qty": 300,
+                "cost_price": 210.0,
+                "thesis": "储能+算力能源配套，趋势稳健。",
+                "t1_sellable": 300,
+                "buy_date": "2026-03-17",
             },
         ],
         "trades": [
-            {"ts": "2026-03-22 14:50:00", "name": "贵州茅台", "symbol": "600519", "action": "加仓", "price": 1688.0, "qty": 20, "reason": "尾盘资金回流消费，趋势未破，仓位小幅提升。"},
-            {"ts": "2026-03-21 09:35:00", "name": "中国平安", "symbol": "601318", "action": "持有", "price": 43.2, "qty": 0, "reason": "估值仍具吸引力，暂不追高。"},
-            {"ts": "2026-03-20 14:50:00", "name": "宁德时代", "symbol": "300750", "action": "减仓", "price": 191.0, "qty": 100, "reason": "短线涨幅偏快，先落袋部分利润。"},
-            {"ts": "2026-03-19 09:31:00", "name": "贵州茅台", "symbol": "600519", "action": "买入", "price": 1662.0, "qty": 40, "reason": "防御资产走强，回撤后重新介入。"},
-            {"ts": "2026-03-18 14:49:00", "name": "中国平安", "symbol": "601318", "action": "买入", "price": 42.2, "qty": 300, "reason": "权重金融企稳，风险收益比改善。"},
-            {"ts": "2026-03-17 09:36:00", "name": "宁德时代", "symbol": "300750", "action": "买入", "price": 183.5, "qty": 100, "reason": "景气方向回暖，顺势布局。"},
+            {"ts": "2026-03-24 10:30:00", "name": "中际旭创", "symbol": "300308", "action": "买入", "price": 168.5, "qty": 300, "reason": "价格突破前期阻力位，成交量配合动量增强。", "is_t1": True},
+            {"ts": "2026-03-24 09:45:00", "name": "寒武纪", "symbol": "688256", "action": "加仓", "price": 258.0, "qty": 150, "reason": "AI芯片板块动量持续，趋势确认。", "is_t1": False},
+            {"ts": "2026-03-23 14:50:00", "name": "新易盛", "symbol": "300502", "action": "买入", "price": 135.2, "qty": 200, "reason": "光模块板块突破，动量因子触发买入信号。", "is_t1": True},
+            {"ts": "2026-03-23 11:20:00", "name": "中芯国际", "symbol": "688981", "action": "加仓", "price": 88.5, "qty": 500, "reason": "芯片代工需求增长，趋势健康。", "is_t1": False},
+            {"ts": "2026-03-22 14:30:00", "name": "宁德时代", "symbol": "300750", "action": "减仓", "price": 218.0, "qty": 100, "reason": "动量减弱，锁定部分收益。", "is_t1": False},
+            {"ts": "2026-03-22 10:15:00", "name": "中际旭创", "symbol": "300308", "action": "买入", "price": 162.0, "qty": 500, "reason": "算力板块趋势启动，价格突破确认。", "is_t1": False},
         ],
-    },
-    "stock_scalper": {
-        "display_name": "超短高手",
-        "market_type": "stock",
-        "run_frequency": "每小时一次",
-        "initial_capital": 1_000_000,
-        "cash": 518_300,
-        "symbols": ["002594", "300308", "601127"],
-        "positions": [
-            {"symbol": "002594", "name": "比亚迪", "weight": 0.18, "qty": 300, "cost_price": 228.0, "thesis": "高弹性主线龙头，关注日内量价配合。"},
-            {"symbol": "300308", "name": "中际旭创", "weight": 0.17, "qty": 260, "cost_price": 161.0, "thesis": "高景气赛道，偏强趋势下做加速。"},
-            {"symbol": "601127", "name": "赛力斯", "weight": 0.13, "qty": 400, "cost_price": 91.0, "thesis": "高波动标的，适合快进快出。"},
-        ],
-        "trades": [
-            {"ts": "2026-03-22 14:30:00", "name": "赛力斯", "symbol": "601127", "action": "止盈", "price": 96.8, "qty": 100, "reason": "冲高量能衰减，先兑现部分利润。"},
-            {"ts": "2026-03-22 13:30:00", "name": "中际旭创", "symbol": "300308", "action": "加仓", "price": 166.5, "qty": 60, "reason": "分时强势回封，延续性较好。"},
-            {"ts": "2026-03-22 11:30:00", "name": "比亚迪", "symbol": "002594", "action": "买入", "price": 231.6, "qty": 80, "reason": "日内量价共振，博弈午后冲高。"},
-            {"ts": "2026-03-22 10:30:00", "name": "中际旭创", "symbol": "300308", "action": "持有", "price": 164.9, "qty": 0, "reason": "趋势未破，等待进一步放量。"},
-            {"ts": "2026-03-22 09:30:00", "name": "赛力斯", "symbol": "601127", "action": "买入", "price": 92.4, "qty": 120, "reason": "高开承接良好，抢首波脉冲。"},
-            {"ts": "2026-03-21 14:30:00", "name": "比亚迪", "symbol": "002594", "action": "减仓", "price": 236.1, "qty": 60, "reason": "短线过热，降低尾盘回撤风险。"},
-        ],
-    },
-    "crypto_flexible": {
-        "display_name": "自由发挥",
-        "market_type": "crypto",
-        "run_frequency": "每小时一次",
-        "initial_capital": 1_000_000,
-        "cash": 84_500,
-        "symbols": ["BTC-USDT", "ETH-USDT", "SOL-USDT"],
-        "positions": [
-            {"symbol": "BTC-USDT", "name": "BTC", "weight": 0.34, "qty": 1.2, "cost_price": 81200.0, "thesis": "大盘核心资产，趋势交易为主。"},
-            {"symbol": "ETH-USDT", "name": "ETH", "weight": 0.22, "qty": 12.0, "cost_price": 4020.0, "thesis": "Beta 较高，跟随主趋势灵活调整。"},
-            {"symbol": "SOL-USDT", "name": "SOL", "weight": 0.16, "qty": 85.0, "cost_price": 128.0, "thesis": "强势山寨风向标，适合顺势参与。"},
-        ],
-        "trades": [
-            {"ts": "2026-03-22 20:00:00", "name": "BTC", "symbol": "BTC-USDT", "action": "持有", "price": 84250.0, "qty": 0, "reason": "主升趋势仍在，维持核心仓位。"},
-            {"ts": "2026-03-22 19:00:00", "name": "ETH", "symbol": "ETH-USDT", "action": "加仓", "price": 4180.0, "qty": 1.5, "reason": "强于大盘，补涨逻辑延续。"},
-            {"ts": "2026-03-22 18:00:00", "name": "SOL", "symbol": "SOL-USDT", "action": "减仓", "price": 139.8, "qty": 10, "reason": "拉升过快，先回收部分筹码。"},
-            {"ts": "2026-03-22 17:00:00", "name": "BTC", "symbol": "BTC-USDT", "action": "买入", "price": 83820.0, "qty": 0.1, "reason": "回踩后再度放量，顺势加仓。"},
-            {"ts": "2026-03-22 16:00:00", "name": "ETH", "symbol": "ETH-USDT", "action": "买入", "price": 4110.0, "qty": 2.0, "reason": "相对强度提升，参与轮动。"},
-            {"ts": "2026-03-22 15:00:00", "name": "SOL", "symbol": "SOL-USDT", "action": "买入", "price": 133.1, "qty": 12, "reason": "高弹性资产出现二次启动。"},
-        ],
-    },
-    "crypto_aggressive": {
-        "display_name": "勇猛精进",
-        "market_type": "crypto",
-        "run_frequency": "每小时一次",
-        "initial_capital": 1_000_000,
-        "cash": 38_000,
-        "symbols": ["BTC-USDT", "ETH-USDT", "DOGE-USDT"],
-        "positions": [
-            {"symbol": "BTC-USDT", "name": "BTC", "weight": 0.24, "qty": 0.9, "cost_price": 80500.0, "thesis": "趋势锚点，作为高风险组合底仓。"},
-            {"symbol": "ETH-USDT", "name": "ETH", "weight": 0.26, "qty": 18.0, "cost_price": 3980.0, "thesis": "波动承接能力强，适合放大收益。"},
-            {"symbol": "DOGE-USDT", "name": "DOGE", "weight": 0.32, "qty": 55000.0, "cost_price": 0.168, "thesis": "高弹性投机品种，追求最大收益。"},
-        ],
-        "trades": [
-            {"ts": "2026-03-22 20:00:00", "name": "DOGE", "symbol": "DOGE-USDT", "action": "加仓", "price": 0.182, "qty": 8000, "reason": "高波动突破，接受回撤换取更高收益。"},
-            {"ts": "2026-03-22 19:00:00", "name": "ETH", "symbol": "ETH-USDT", "action": "持有", "price": 4195.0, "qty": 0, "reason": "趋势极强，不轻易下车。"},
-            {"ts": "2026-03-22 18:00:00", "name": "BTC", "symbol": "BTC-USDT", "action": "减仓", "price": 84400.0, "qty": 0.05, "reason": "腾出保证金给高弹性标的。"},
-            {"ts": "2026-03-22 17:00:00", "name": "DOGE", "symbol": "DOGE-USDT", "action": "买入", "price": 0.176, "qty": 12000, "reason": "追击强势币，收益优先。"},
-            {"ts": "2026-03-22 16:00:00", "name": "ETH", "symbol": "ETH-USDT", "action": "加仓", "price": 4132.0, "qty": 3.0, "reason": "强趋势延续，主动提高风险暴露。"},
-            {"ts": "2026-03-22 15:00:00", "name": "BTC", "symbol": "BTC-USDT", "action": "买入", "price": 83650.0, "qty": 0.08, "reason": "借回踩补仓，为高贝塔资产打底。"},
-        ],
+        "constraints": {
+            "t1_enabled": True,  # T+1约束
+            "lot_size": 100,     # 100股整数倍
+            "max_single_position": 0.20,  # 单票最大20%
+            "min_cash_ratio": 0.10,      # 最低现金比例10%
+        }
     },
 }
+
 
 INITIAL_STRATEGY_CONFIG = deepcopy(STRATEGY_CONFIG)
 
 
 def _load_quotes(strategy_key: str) -> Tuple[Dict[str, Quote], str]:
     cfg = STRATEGY_CONFIG[strategy_key]
-    if cfg["market_type"] == "stock":
-        quotes = fetch_a_share_quotes(cfg["symbols"])
-    else:
-        quotes = fetch_crypto_quotes(cfg["symbols"])
+    quotes = fetch_a_share_quotes(cfg["symbols"])
     source = next(iter(quotes.values())).source if quotes else "Fallback Template"
     return quotes, source
+
+
+def get_account_status(strategy_key: str) -> Dict:
+    """获取账户现状，用于AI决策上下文"""
+    cfg = STRATEGY_CONFIG[strategy_key]
+    quotes, _ = _load_quotes(strategy_key)
+    
+    positions_value = 0.0
+    positions_detail = []
+    
+    for item in cfg["positions"]:
+        quote = quotes.get(item["symbol"])
+        current_price = quote.price if quote else item["cost_price"]
+        market_value = current_price * item["qty"]
+        positions_value += market_value
+        
+        positions_detail.append({
+            "symbol": item["symbol"],
+            "name": item["name"],
+            "qty": item["qty"],
+            "t1_sellable": item.get("t1_sellable", item["qty"]),
+            "cost_price": item["cost_price"],
+            "current_price": round(current_price, 2),
+            "market_value": round(market_value, 2),
+            "pnl_pct": round(((current_price - item["cost_price"]) / item["cost_price"] * 100), 2),
+        })
+    
+    equity = cfg["cash"] + positions_value
+    nav = equity / cfg["initial_capital"]
+    
+    # 计算购买力 (净资产 × 2 - 已用)
+    max_purchase_power = equity * 2
+    used_margin = positions_value
+    available_purchase_power = max_purchase_power - used_margin
+    
+    return {
+        "cash": cfg["cash"],
+        "equity": round(equity, 2),
+        "nav": round(nav, 4),
+        "total_return_pct": round((nav - 1) * 100, 2),
+        "positions_value": round(positions_value, 2),
+        "available_purchase_power": round(available_purchase_power, 2),
+        "positions": positions_detail,
+        "constraints": cfg.get("constraints", {}),
+    }
+
+
+def get_market_context(strategy_key: str) -> Dict:
+    """获取行情快照，用于AI决策上下文"""
+    from app.services.news import get_news_summary_for_ai, update_asset_pool_hot_status
+    
+    cfg = STRATEGY_CONFIG[strategy_key]
+    
+    # 更新热点状态
+    update_asset_pool_hot_status(cfg)
+    
+    quotes, source = _load_quotes(strategy_key)
+    
+    market_data = {}
+    for symbol, quote in quotes.items():
+        # 检查是否热点
+        is_hot = cfg["asset_pool"].get(symbol, {}).get("is_hot", False)
+        
+        market_data[symbol] = {
+            "name": quote.name,
+            "current_price": quote.price,
+            "prev_close": quote.extra.get("prev_close", quote.price),
+            "change_pct": quote.change_pct,
+            "high": quote.high,
+            "low": quote.low,
+            "volume": quote.volume,
+            "is_hot": is_hot,
+        }
+    
+    # 获取财讯摘要
+    news_summary = get_news_summary_for_ai()
+    
+    return {
+        "timestamp": get_now_ts(),
+        "source": source,
+        "data": market_data,
+        "news_summary": news_summary,
+    }
 
 
 def build_snapshot(strategy_key: str) -> StrategySnapshot:
@@ -133,6 +238,7 @@ def build_snapshot(strategy_key: str) -> StrategySnapshot:
     quotes, source = _load_quotes(strategy_key)
     positions: List[Position] = []
     positions_value = 0.0
+    
     for item in cfg["positions"]:
         quote = quotes.get(item["symbol"])
         current_price = quote.price if quote else item["cost_price"]
@@ -151,11 +257,13 @@ def build_snapshot(strategy_key: str) -> StrategySnapshot:
                 thesis=item["thesis"],
             )
         )
+    
     equity = cfg["cash"] + positions_value
     nav = equity / cfg["initial_capital"]
     total_return_pct = (equity / cfg["initial_capital"] - 1) * 100
     trades = [TradeRecord(**t) for t in cfg["trades"]]
     trades = sorted(trades, key=lambda x: x.ts, reverse=True)
+    
     return StrategySnapshot(
         strategy=strategy_key,
         display_name=cfg["display_name"],
@@ -171,16 +279,30 @@ def build_snapshot(strategy_key: str) -> StrategySnapshot:
         updated_at=get_now_ts(),
         data_source=source,
     )
+
+
+def _round_to_lot(qty: int, lot_size: int = 100) -> int:
+    """将数量调整为整数倍"""
+    return (qty // lot_size) * lot_size
+
+
 def apply_decision_to_strategy(strategy_key: str, decision: Dict) -> bool:
+    """应用AI决策到策略，包含T+1约束和风控检查"""
     if strategy_key not in STRATEGY_CONFIG:
         return False
 
     cfg = STRATEGY_CONFIG[strategy_key]
+    constraints = cfg.get("constraints", {})
+    
     symbol = (decision.get("symbol") or "").strip()
     action = (decision.get("action") or "").strip()
     qty = int(decision.get("qty") or 0)
     reason = (decision.get("reason") or "").strip()
-
+    
+    # 100股整数倍约束
+    lot_size = constraints.get("lot_size", 100)
+    qty = _round_to_lot(qty, lot_size)
+    
     if not symbol or qty < 0:
         return False
 
@@ -195,6 +317,7 @@ def apply_decision_to_strategy(strategy_key: str, decision: Dict) -> bool:
             break
 
     name = target["name"] if target else (quote.name if quote else symbol)
+    today = datetime.now().strftime("%Y-%m-%d")
 
     if action in ("持有", ""):
         cfg["trades"].insert(
@@ -207,6 +330,7 @@ def apply_decision_to_strategy(strategy_key: str, decision: Dict) -> bool:
                 "price": round(price, 4),
                 "qty": 0,
                 "reason": reason,
+                "is_t1": False,
             },
         )
         cfg["trades"] = cfg["trades"][:20]
@@ -215,8 +339,34 @@ def apply_decision_to_strategy(strategy_key: str, decision: Dict) -> bool:
     if action in ("买入", "加仓"):
         if qty <= 0 or price <= 0:
             return False
+        
+        # 检查单票仓位限制
+        max_position = constraints.get("max_single_position", 0.20)
         cost = price * qty
-        if cfg["cash"] < cost:
+        
+        # 计算当前总权益
+        positions_value = sum(p["qty"] * price for p in cfg["positions"])
+        equity = cfg["cash"] + positions_value
+        
+        if target:
+            target_value = (target["qty"] + qty) * price
+        else:
+            target_value = qty * price
+        
+        if target_value / equity > max_position:
+            return False
+        
+        # 检查购买力 (1x杠杆)
+        max_purchase_power = equity * 2
+        used_margin = positions_value
+        available_power = max_purchase_power - used_margin
+        
+        if cost > available_power:
+            return False
+        
+        # 检查最低现金比例
+        min_cash_ratio = constraints.get("min_cash_ratio", 0.10)
+        if (cfg["cash"] - cost) / equity < min_cash_ratio:
             return False
 
         cfg["cash"] -= cost
@@ -227,6 +377,8 @@ def apply_decision_to_strategy(strategy_key: str, decision: Dict) -> bool:
             new_qty = old_qty + qty
             target["cost_price"] = round(((old_qty * old_cost) + cost) / new_qty, 4)
             target["qty"] = new_qty
+            # 更新T+1可卖数量（当日买入不可卖）
+            target["t1_sellable"] = target.get("t1_sellable", old_qty)
         else:
             cfg["positions"].append(
                 {
@@ -235,20 +387,36 @@ def apply_decision_to_strategy(strategy_key: str, decision: Dict) -> bool:
                     "weight": 0.0,
                     "qty": qty,
                     "cost_price": round(price, 4),
-                    "thesis": reason or "AI 自动建仓",
+                    "thesis": reason or "AI 动量趋势跟踪建仓",
+                    "t1_sellable": 0,  # 当日买入，T+1不可卖
+                    "buy_date": today,
                 }
             )
+            
     elif action in ("卖出", "减仓"):
         if not target or qty <= 0 or price <= 0:
             return False
+        
+        # T+1约束检查
+        if constraints.get("t1_enabled", True):
+            t1_sellable = target.get("t1_sellable", target["qty"])
+            if qty > t1_sellable:
+                qty = t1_sellable  # 只能卖T+1可卖数量
+        
         sell_qty = min(float(target["qty"]), qty)
+        if sell_qty <= 0:
+            return False
+            
         cfg["cash"] += price * sell_qty
         target["qty"] = float(target["qty"]) - sell_qty
+        target["t1_sellable"] = target.get("t1_sellable", target["qty"]) - sell_qty
+        
         if target["qty"] <= 0:
             cfg["positions"] = [p for p in cfg["positions"] if p["symbol"] != symbol]
     else:
         return False
 
+    # 更新权重
     quotes, _ = _load_quotes(strategy_key)
     total_equity = float(cfg["cash"])
     for item in cfg["positions"]:
@@ -272,10 +440,12 @@ def apply_decision_to_strategy(strategy_key: str, decision: Dict) -> bool:
             "price": round(price, 4),
             "qty": qty,
             "reason": reason,
+            "is_t1": action in ("买入", "加仓"),
         },
     )
     cfg["trades"] = cfg["trades"][:20]
     return True
+
 
 def reset_strategy(strategy_key: str) -> bool:
     if strategy_key not in STRATEGY_CONFIG or strategy_key not in INITIAL_STRATEGY_CONFIG:
@@ -283,3 +453,30 @@ def reset_strategy(strategy_key: str) -> bool:
 
     STRATEGY_CONFIG[strategy_key] = deepcopy(INITIAL_STRATEGY_CONFIG[strategy_key])
     return True
+
+
+def eod_processing(strategy_key: str) -> Dict:
+    """日终结算：更新T+1可卖额度"""
+    if strategy_key not in STRATEGY_CONFIG:
+        return {}
+    
+    cfg = STRATEGY_CONFIG[strategy_key]
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    for item in cfg["positions"]:
+        buy_date = item.get("buy_date", today)
+        if buy_date != today:
+            # 非当日买入，全部可卖
+            item["t1_sellable"] = item["qty"]
+    
+    # 生成结算报告
+    snapshot = build_snapshot(strategy_key)
+    
+    return {
+        "date": today,
+        "nav": snapshot.nav,
+        "total_return_pct": snapshot.total_return_pct,
+        "cash": snapshot.cash,
+        "positions_count": snapshot.holdings_count,
+        "updated_at": get_now_ts(),
+    }

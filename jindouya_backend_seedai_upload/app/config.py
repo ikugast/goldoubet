@@ -17,7 +17,6 @@ class Settings(BaseModel):
         if origin.strip()
     ]
     use_live_data: bool = os.getenv("USE_LIVE_DATA", "true").lower() == "true"
-    crypto_provider: str = os.getenv("CRYPTO_PROVIDER", "binance")
     news_use_rss: bool = os.getenv("NEWS_USE_RSS", "true").lower() == "true"
 
     use_real_ai: bool = os.getenv("USE_REAL_AI", "false").lower() == "true"

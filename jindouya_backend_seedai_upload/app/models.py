@@ -82,6 +82,8 @@ class MarketNewsItem(BaseModel):
     summary: str
     impact: str
     market_focus: str
+    hot_sectors: List[str] = Field(default_factory=list)
+    hot_stocks: List[str] = Field(default_factory=list)
 
 
 class AIPingResponse(BaseModel):
